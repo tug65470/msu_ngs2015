@@ -1,0 +1,191 @@
+---
+title: "GSE115094 C11KO VS WT LPS"
+output: html_document
+---
+
+# Introduction
+This tutorial came from the [YouTube video](https://www.youtube.com/watch?v=7UKMU5HK380) and uses the Bottomly dataset for the tutorial (https://github.com/mistrm82/msu_ngs2015/raw/master/bottomly_eset.RData).  The sample code is uploaded on the Github page [msu_ngs2015](https://github.com/mistrm82/msu_ngs2015/blob/master/hands-on.Rmd).
+
+# Load required libraries 
+```{Library Library Loading, include=TRUE}
+# Load required libraries 
+
+source("https://bioconductor.org/biocLite.R")
+biocLite("DESeq2")
+source("https://bioconductor.org/biocLite.R")
+biocLite("edgeR")
+source("https://bioconductor.org/biocLite.R")
+biocLite("limma")
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+library(Biobase)
+library(DESeq2)
+library(edgeR)
+library(limma)
+
+sessionInfo()
+```
+# Building the ExpressionSet
+## Expression Matrix (Assay Data)
+Prepare your expression matrix (assay data) for only the 2 conditions to compare.  When preparing data:
+* Format your table with rows as genes (features) and the columns as samples.
+* Round values to integers (whole numbers, no decimals) [NOTE: Later DESeq2 steps require the expression data to be integers (whole numbers) not decimals. Round expression before uploaing this step]:.
+* Ensure the control samples are the last columns in the table.
+* Export/Save As table in ".txt" tab delimited [Note: it may be possible to directly import the Excel file in the Envirnoment Tab but this tutorial is written assuming .txt file importing]
+
+```{Importing Expression Matrix from .txt  File, include=TRUE}
+dataDirectory <- system.file("extdata", package="Biobase")
+exprsFile <- "/Users/cdrummeriv/RStudio Projects (cdrummeriv)/GSE115094/GSE115094_Expression.txt"
+exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\t", row.names=1, as.is=TRUE))
+```
+Verify the struction of the exprsFile:
+* Class should be a [1]"matrix 
+* Dimensions (dim) should be [1] "number of genes/features" "number of samples".  
+* Column Names (colnames) should return the sample ID's for each column.  
+* Preview the first 5 genes (head(exprs)) should show you gene/feature names and columns
+```{Verifying exprs, include=TRUE}
+class(exprs)
+dim(exprs)
+colnames(exprs)
+head(exprs)
+```
+## Phenotype Data Matrix (Phenotypic Data)
+Prepare your phenotype data matrix (phenotypic data) for the 2 conditions to compare.  When preparing data:
+* Format your table with rows as samples and columns as covariates (sex, age, treatment status, genotype etc) [NOTE: The condition to compare should have 2 possible values.]
+* Ensure the control samples are the last columns in the table. [NOTE: the "control" group should be the last entry in the phenotype table.  The DESeq2 analysis we'll use later makes this assumptions when it creates the comparions to make (contrast maxtrix)]:
+```{Importing Phenotype Data Matrix from .txt File, include=TRUE}
+pdataDirectory<- system.file("pextdata", package="Biobase")
+pDataFile <- "/Users/cdrummeriv/RStudio Projects (cdrummeriv)/GSE115094/GSE115094_Phenotype.txt"
+pData <- read.table(pDataFile, row.names = 1, header = TRUE, sep = "\t")
+```
+Verify the dimension (dim), genes (rownames) and summary  table (summary):
+* Dimension should be #Rows vs #Columns
+* Row Names should be the sample IDs
+* Summary should reflect 1) Sample ID should be factors and 2) Strain (variable testing) should be factors
+```{pData Verification, include=TRUE}
+dim(pData)
+rownames(pData)
+summary(pData)
+```
+If Sample ID and/or Strain (testing variable) are chr, convert to factor:
+```{Characteristic to Factor Conversion, include=TRUE}
+str(pData)
+pData$sample.id <- as.factor(pData$sample.id)
+pData
+
+str(pData)
+pData$strain <- as.factor(pData$strain)
+pData
+
+str(pData)
+```
+Verify that the number of rows of phenotypic data match the number of columns of expression data, and indeed that the row and column names are identically ordered:
+* Readout should be "[1] TRUE"
+```{phenotype matching expressino data check, include=TRUE}
+all(rownames(pData)==colnames(exprs))
+```
+## Feature Data Matrix
+
+```{Feature Data Matrix, include=FALSE}
+fdataDirectory<- system.file("pextdata", package="Biobase")
+fDataFile <- "/Users/cdrummeriv/RStudio Projects (cdrummeriv)/GSE115094/GSE115094_Feature.txt"
+fData <- read.table(fDataFile, row.names = 1, header = TRUE, sep = "\t")
+  
+```
+## Compiling the ExpressionSet Object
+An ExpressionSet (eSet) object is created by assembling its component parts and calling the ExpressionSet constructor.  Verify the dimensions of the ExpressionSet:
+* Features should include all genes (features) in the expression matrix
+* Samples should include all samples in the expression and phenotype matrices
+```{Compiling an ExpressionSet, include=TRUE}
+GSEeSet <-ExpressionSet(assayData = exprs,
+                        phenoData = AnnotatedDataFrame(pData),
+                        featureData = AnnotatedDataFrame(fData))
+
+dim(GSEeSet)
+```
+# Statistical Analysis
+## Log Transformation, Mean, Variance, SD Calucations
+This code block will: 
+* Make a copy of the ExpressionSet for the calculations
+* Create a "CPM matrix." [NOTE: This step normalizes the data, takes the log and saves it to a new variable "cpm.mat".]
+* Create a vector to compute the mean.  
+* Create a vector to compute the standard deviation.
+* Create a plot of the data we calculated. 
+```{Transform.  Calculate mean, SD, include=FALSE}
+eset <- GSEeSet
+cpm.mat <- log(cpm(exprs(eset)))
+mean.vec <- apply(cpm.mat, 1, mean)
+sdvec <- apply(cpm.mat, 1, sd)
+plot(mean.vec, sdvec, pch=".", main="2 replicates", ylab="sd", xlab="Average logCPM")
+
+```
+# Differential Gene Expression and Statistical Modeling
+## Rationale for using the Negative Bionimal (NB) Statistical Model
+The low levels of replication rule out, for all practical purposes, distribution-free rank or permutation-based methods. The Poisson model doesn't work either -- it is a single parameter model with mean == variance and real data has more variance than Poisson can explain (which we will look at in our dataset). The Negative Binomial (NB) model is a good approximation, where the variability between replicates is modeled by the **dispersion parameter** `r citep("10.1038/nprot.2013.099")`. 
+
+[edgeR](http://www.bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf) and [DESeq2](https://www.bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.pdf) are two very popular tools which implement differential expression analysis on the basis of the NB model. They offer overlapping functionality but differ in the way dispersion are estimated. Accurate estimation of the dispersion parameter is critical for the statistical inference of differential expression.  [Seidman 2020 uses DESeq2 so that whats the part of the tutorial I'll follow below].
+
+## DESeq2:
+To perform the DESeq2 Analysis:
+* Verify the expression matrix to use in the analysis
+* Verify the phenotypic matrix to use in the analysis 
+* Create a DESeq2 (dds) object form the expression set 
+    * countData: identifies the expression data
+    * colData: identifies the phenotypic data
+    * design: specifies the variable that associated with the DGE
+* Populate dds object with statistical calculations
+* Verify the DESeq2 object 
+* Plot the dispersion graph for the data
+```{Creating DESeq2 Object, include=TRUE}
+head(exprs(eset))
+head(pData(eset))
+dds <- DESeqDataSetFromMatrix(countData = exprs(eset), colData = pData(eset), 
+design = ~ strain)
+dds <- DESeq(dds)
+plotDispEsts(dds)
+```
+## Verifying Comparison using Contrast Matrix:
+You can specify control vs test groups by setting up a contrast matrix ("design.mat"). The columns in this contrast matrix will be for the variable you are testing and the values in each "cell" represent true(1)/false(0) status for that variable.  The contrast matrix requires a list of possible comparisons to make.  With this list of possible comparisons, we'll construct the contrast matrix:
+* Find the "resultNames" from the dds object
+* Fill the resultNames in the () of the contrast function
+* Verify the created contrast matrix
+* Create and verify a table with adj.p.val, outliers, low counts etc)
+* Manually adjust p-value cutoff
+* Set then verify a "threshold" of only significant p-values
+* View genes with a TRUE for a significant p-value
+```{Create Contrast Matrix, include=TRUE}
+# Run this line, record the comparison 
+resultsNames(dds)
+# place the comparison string generated in the first line in the "list("") quotations
+contrast.deseq2 <- list("strain_Test_vs_Control")
+contrast.deseq2
+deseq2_results <- results(dds, contrast=contrast.deseq2)
+summary(deseq2_results)
+summary(deseq2_results, alpha=0.05)
+#  NOTE: this  line only needed if you want to set a different p.value threshold deseq2_results$threshold "<- as.logical(deseq2_results$padj < p.threshold)"
+View(deseq2_results)
+```
+## Differential Expression Analysis Results 
+Excerpts from [Bioconductor](http://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html): The standard differential expression analysis steps are wrapped into a single function, DESeq. The estimation steps performed by this function are described below, in the manual page for ?DESeq and in the Methods section of the DESeq2 publication (Love, Huber, and Anders 2014).
+
+Results tables are generated using the function results, which extracts a results table with log2 fold changes, p values and adjusted p values. With no additional arguments to results, the log2 fold change and Wald test p value will be for the last variable in the design formula, and if this is a factor, the comparison will be the last level of this variable over the reference level (see previous note on factor levels). However, the order of the variables of the design do not matter so long as the user specifies the comparison to build a results table for, using the name or contrast arguments of results.
+
+Details about the comparison are printed to the console, directly above the results table. The text, condition treated vs untreated, tells you that the estimates are of the logarithmic fold change log2(treated/untreated).
+* Copy the dds object for calculations
+* Generate results based on the new  dds object
+
+```{Generation of DESeq2 Table, include=TRUE}
+deseq2_table <- DESeq(dds)
+res <- results(deseq2_table)
+res
+```
+A plain-text file of the results can be exported using the base R functions write.csv or write.delim. We suggest using a descriptive file name indicating the variable and levels which were tested (the comparison string from earlier should suffice).
+
+```{CSV Export, include=TRUE}
+write.csv(as.data.frame(res), 
+          file="GSE11094_C11KO_vs_WT.csv")
+
+```
+## Continue with Existing Yang_Wang Lab Database Mining  Workflow
